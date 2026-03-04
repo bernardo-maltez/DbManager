@@ -6,7 +6,7 @@ This is a small program I've written to manage json databases regarding anime, m
 2. Update the MovieToken and FolderPath inside the config.json
 3. Add the .exe to the system PATH (optional)
 
-## Delted my config file, now what?
+## Deleted my config file, now what?
 Create a new one and copy the template below
 
 ```json
