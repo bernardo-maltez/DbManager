@@ -3,6 +3,7 @@ This is a small program I've written to manage json databases regarding anime, m
 
 ## How to make it work?
 1. Extract the folder 
+2. Create a [TMDB account](https://www.themoviedb.org/) and a [TMDB token](https://www.themoviedb.org/settings/api)
 2. Update the MovieToken and FolderPath inside the config.json
 3. Add the .exe to the system PATH (optional)
 
@@ -29,6 +30,6 @@ This approach lets you **own** your data. Therefore, if letterboxd goes down or 
 Probably not.
 
 ### Roadmap
-- [X] Code optimaztion (pandas, mainly)
+- [X] Code optimization (pandas, mainly)
 - [X] Add editing mode 
 - [ ] Add delete mode
