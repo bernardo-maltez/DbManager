@@ -1,6 +1,17 @@
 import requests
-from InquirerPy import prompt
-from InquirerPy.base.control import Choice
+import sys
+import uuid
+from datetime import datetime
+from pathlib import Path
+from InquirerPy import inquirer
+
+# Path setup to ensure core and services are discoverable
+root_path = Path(__file__).parent.parent
+if str(root_path) not in sys.path:
+    sys.path.append(str(root_path))
+
+from core import schemas
+from core import user_interface as ui
 
 """
 AniList API Service Provider.
@@ -10,8 +21,6 @@ and user selection specifically for Anime media types.
 """
 
 ANILIST_URL = 'https://graphql.anilist.co'
-
-# --- Specific Methods ---
 
 def fetch_data(url: str, headers: dict = None, payload: dict = None) -> dict:
     """
@@ -23,7 +32,8 @@ def fetch_data(url: str, headers: dict = None, payload: dict = None) -> dict:
         payload (dict, optional): JSON payload for POST requests. Defaults to None.
 
     Returns:
-        dict: The JSON response from the server or an error dictionary.
+        dict: The JSON response from the server or an error dictionary containing 
+              the exception or HTTP status code.
     """
     try:
         if payload:
@@ -38,7 +48,44 @@ def fetch_data(url: str, headers: dict = None, payload: dict = None) -> dict:
         return {'error': f"Connection failed: {str(e)}"}
 
 
-def anilist_data(name: str) -> dict:
+def user_input(media_status_list: list, total_episodes: int) -> dict:
+    """
+    Orchestrates the terminal UI dialogs to collect user-specific data for an entry.
+
+    Args:
+        media_status_list (list): Allowed strings for user status (from schema).
+        total_episodes (int): Max episodes allowed for the 'current_episode' input.
+
+    Returns:
+        dict: A collection of user responses including status, episodes, 
+              watch count, score, and personal thoughts.
+    """
+    status = ui.media_status_dialog(media_status_list)
+    
+    # Handle cases where total_episodes might be None from API
+    max_ep = total_episodes if total_episodes else 9999
+    
+    episodes = inquirer.number(
+        message="How many episodes have you seen?",
+        min_allowed=0,
+        max_allowed=max_ep
+    ).execute()
+    
+    times = ui.media_times_dialog() 
+    score = ui.media_score_dialog()
+    thoughts = ui.media_thougths_dialog()
+
+    return {
+        "status": status,
+        "current_episode": episodes,
+        "times_watched": times,
+        "score": score,
+        "thoughts": thoughts
+    }
+
+# --- Generic Methods (Used by Orchestrator) ---
+
+def run_fetch(name: str) -> dict:
     """
     Queries the AniList GraphQL API for anime search results.
 
@@ -46,7 +93,7 @@ def anilist_data(name: str) -> dict:
         name (str): The search query (anime title).
 
     Returns:
-        dict: Raw GraphQL response or error dictionary.
+        dict: Raw GraphQL response containing a Page of media results.
     """
     query = """
         query ($query: String, $format: MediaType, $page: Int, $perpage: Int) {
@@ -75,72 +122,64 @@ def anilist_data(name: str) -> dict:
         'query': name,
         'format': "ANIME",
         'page': 1,
-        'perpage': 5  # Increased slightly for better fuzzy choice
+        'perpage': 5
     }
     return fetch_data(ANILIST_URL, payload={'query': query, 'variables': variables})
 
 
-# --- Generic Methods (Used by Orchestrator) ---
-
-def run_fetch(name: str) -> dict:
-    """
-    Standardized entry point for the fetching stage.
-    """
-    return anilist_data(name)
-
-
 def run_clean_up(raw_data: dict) -> list:
     """
-    Extracts the list of media entries from raw AniList JSON.
+    Parses the raw GraphQL response to extract the media list.
 
     Args:
-        raw_data (dict): Raw data from anilist_data.
+        raw_data (dict): The dictionary returned by run_fetch.
 
     Returns:
-        list: A list of media dictionaries.
+        list: A list of media dictionaries. Returns empty list if data is missing.
     """
     return raw_data.get('data', {}).get('Page', {}).get('media', [])
 
 
-def run_choice(entries: list):
+def run_process_entry(entry_data: dict) -> dict:
     """
-    Prompt the user to select one anime from the list of results.
+    Maps raw API data and user input into the standardized application schema.
 
     Args:
-        entries (list): List of cleaned media entries.
+        entry_data (dict): The raw media dictionary selected by the user.
 
     Returns:
-        dict: The full dictionary of the selected entry, or None.
+        dict: A fully populated dictionary ready for JSON database insertion, 
+              matching the application's video schema.
     """
-    if not entries:
-        return {"error": "No entries found to choose from."}
+    # NOTE: Use the template getter here, not the full metadata schema
+    processed_entry = schemas.get_full_schema_for("anime") 
+    
+    # Get the rules/metadata separately just for the status options
+    api_rules = schemas.get_full_schema_for("anime")
 
-    formatted_choices = []
+    titles = entry_data.get('title', {})
+    start_date = entry_data.get('startDate', {})
     
-    for index, entry in enumerate(entries):
-        title_data = entry.get('title', {})
-        # AniList specific title logic
-        title_text = title_data.get('english') or title_data.get('romaji') or 'Unknown Title'
-        
-        # Extract year from startDate dict
-        start_date = entry.get('startDate', {})
-        year = start_date.get('year') if start_date else "????"
-        
-        display_name = f"{title_text} ({year})"
-        
-        # We pass the actual entry dict as the value
-        formatted_choices.append(Choice(value=entry, name=display_name))
-    
-    formatted_choices.append(Choice(value=None, name="Cancel selection"))
+    entry_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    questions = [
-        {
-            "type": "fuzzy",
-            "name": "selected_entry",
-            "message": "Which entry do you want?",
-            "choices": formatted_choices,
-        }
-    ]
+    # Extract options from the metadata rules
+    status_options = api_rules["userStatus"]["options"]
+    user_input_data = user_input(status_options, entry_data.get('episodes'))
+
+    processed_entry.update({
+        "id": str(uuid.uuid4())[:8],
+        "entryDate": entry_timestamp,
+        "mediaTitle": titles.get('romaji'),
+        "mediaTitleAlternatives": [titles.get('english')] if titles.get('english') else [],
+        "mediaGenres": entry_data.get('genres', []),
+        "mediaReleaseDate": f"{start_date.get('year')}-{start_date.get('month')}-{start_date.get('day')}",
+        "mediaCountry": entry_data.get('countryOfOrigin'),
+        "mediaTotalEpisodes": entry_data.get('episodes'),
+        "userCurrentEpisode": user_input_data['current_episode'],
+        "userTimesWatched": user_input_data['times_watched'],
+        "userStatus": user_input_data['status'],
+        "userScore": user_input_data['score'],
+        "userThoughts": user_input_data['thoughts']
+    })
     
-    result = prompt(questions)
-    return result.get("selected_entry")
+    return processed_entry
